@@ -27,7 +27,6 @@
 //! never lightening, and then gin-rin glints build on the color patches.
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use crate::history::LanguageColor;
 use crate::koi::{FULL_COLOR_CONTRIBUTIONS, KoiDevelopment, calculate_growth_fraction};
@@ -169,14 +168,11 @@ const STEEL_RAMP: [[u8; 4]; 4] = [
 const WHITE_PATCH_SCORE: f64 = 0.5;
 /// Share of the patch span that pigments cover together, divided by their shares.
 const PATCH_COVERAGE: f64 = 0.58;
-const PATCH_SPAN: Range<f64> = 0.02..0.86;
 /// Patches move this far from organic shapes toward the top pigment's variety layout.
 const VARIETY_PULL: f64 = 0.25;
 // The variety layout votes with a hard step, so it carries little weight against the
 // smooth patch scores.
 const VARIETY_VOTE_WEIGHT: f64 = 0.16 * VARIETY_PULL;
-const SPOT_SPAN: Range<f64> = 0.12..0.8;
-const SPOT_LATERAL_LIMIT: f64 = 0.8;
 /// The full variety layout tints 40% of each fin; the pull shortens the tint with it.
 const FIN_ROOT_TINT_FRACTION: f64 = 0.4 * VARIETY_PULL;
 /// Streak color fills the fin rims and each fin beyond this fraction of its length.
@@ -388,7 +384,6 @@ impl KoiCoat {
         half_width_pixels: f64,
         dither_threshold: f64,
     ) -> CoatPaint {
-        const ASAGI_HEAD_FRACTION: f64 = 0.11;
         let is_on_net = || {
             is_on_scale_net(
                 along_fraction,
@@ -399,7 +394,6 @@ impl KoiCoat {
         };
         let Some(pigment) = self.select_body_pigment(along_fraction, lateral_fraction) else {
             let shade_ramp: &'static [[u8; 4]] = match self.koi_body {
-                KoiBody::Asagi if along_fraction <= ASAGI_HEAD_FRACTION => &WHITE_RAMP,
                 KoiBody::Asagi if is_on_net() => &ASAGI_NET_RAMP,
                 koi_body => koi_body.select_ground_ramp(),
             };
@@ -503,15 +497,10 @@ impl KoiCoat {
         body_length_pixels: f64,
         half_width_pixels: f64,
     ) -> bool {
-        const GLINT_SPAN: Range<f64> = 0.14..0.74;
-        const GLINT_LATERAL_LIMIT: f64 = 0.86;
         // Share of scales that glint at full glimmer.
         const FULL_GLINT_SHARE: f64 = 0.36;
         let glimmer_strength = self.streak_marks.glimmer_strength;
-        if glimmer_strength <= 0.0
-            || !GLINT_SPAN.contains(&along_fraction)
-            || lateral_fraction.abs() >= GLINT_LATERAL_LIMIT
-        {
+        if glimmer_strength <= 0.0 {
             return false;
         }
         let scale_row = (lateral_fraction + 1.0) * half_width_pixels / 2.0;
@@ -530,7 +519,6 @@ impl KoiCoat {
     /// competes like a pigment.
     fn select_body_pigment(&self, along_fraction: f64, lateral_fraction: f64) -> Option<Pigment> {
         let variety_pigment = self.select_variety_pigment(along_fraction, lateral_fraction);
-        let is_in_patch_span = PATCH_SPAN.contains(&along_fraction);
         let mut selected_pigment = None;
         let mut best_score = (1.0 - VARIETY_VOTE_WEIGHT) * WHITE_PATCH_SCORE
             + VARIETY_VOTE_WEIGHT * f64::from(u8::from(variety_pigment.is_none()));
@@ -540,16 +528,12 @@ impl KoiCoat {
             .zip(&self.patch_biases)
             .enumerate()
         {
-            let patch_score = if is_in_patch_span {
-                sample_patch_score(
-                    self.identity_seed,
-                    pigment_index,
-                    along_fraction,
-                    lateral_fraction,
-                ) + patch_bias
-            } else {
-                0.0
-            };
+            let patch_score = sample_patch_score(
+                self.identity_seed,
+                pigment_index,
+                along_fraction,
+                lateral_fraction,
+            ) + patch_bias;
             let blended_score = (1.0 - VARIETY_VOTE_WEIGHT) * patch_score
                 + VARIETY_VOTE_WEIGHT * f64::from(u8::from(variety_pigment == Some(pigment)));
             if blended_score > best_score {
@@ -578,8 +562,6 @@ impl KoiCoat {
             );
         if let Some(secondary_pigment) = secondary_pigment
             && !has_asagi_sides
-            && SPOT_SPAN.contains(&along_fraction)
-            && lateral_fraction.abs() < SPOT_LATERAL_LIMIT
             && sample_spot_noise(identity_seed, along_fraction, lateral_fraction)
                 > self.spot_threshold
         {
@@ -599,7 +581,6 @@ impl KoiCoat {
                     ) > 0.5)
                     .then_some(Pigment::Sumi)
             }
-            Pigment::Ai if along_fraction < 0.11 => None,
             Pigment::Ai if lateral_fraction.abs() > 0.64 => {
                 secondary_pigment.filter(|_| has_asagi_sides)
             }
@@ -699,13 +680,13 @@ fn calculate_pigment_development(pigment: Pigment, color_fraction: f64) -> f64 {
 /// A grid over the patch span, weighted by half width so each sample stands for its
 /// share of body area.
 fn sample_body(calculate_half_width: impl Fn(f64) -> f64) -> Vec<BodySample> {
-    const ALONG_STEPS: usize = 170;
+    const ALONG_STEPS: usize = 201;
     const ALONG_STEP_FRACTION: f64 = 0.005;
     const LATERAL_STEPS: usize = 41;
     const LATERAL_STEP_FRACTION: f64 = 0.05;
     let mut body_samples = Vec::with_capacity(ALONG_STEPS * LATERAL_STEPS);
     for along_step in 0..ALONG_STEPS {
-        let along_fraction = PATCH_SPAN.start + along_step as f64 * ALONG_STEP_FRACTION;
+        let along_fraction = along_step as f64 * ALONG_STEP_FRACTION;
         let area_weight = calculate_half_width(along_fraction);
         for lateral_step in 0..LATERAL_STEPS {
             body_samples.push(BodySample {
@@ -789,7 +770,6 @@ fn find_spot_threshold(
     let spot_coverage = (secondary_share * SPOTS_PER_SHARE).min(MAX_SPOT_COVERAGE);
     let mut spot_noises: Vec<f64> = body_samples
         .iter()
-        .filter(|body_sample| SPOT_SPAN.contains(&body_sample.along_fraction))
         .map(|body_sample| {
             sample_spot_noise(
                 identity_seed,
